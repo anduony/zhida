@@ -1,0 +1,32 @@
+#include "Resource.h"
+#include <windows.h>
+
+#ifdef IDI_APP_ICON
+IDI_APP_ICON    ICON    "..\\res\\app.ico"
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "直达"
+            VALUE "FileDescription",  "直达"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "直达.exe"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 直达"
+            VALUE "OriginalFilename", "直达.exe"
+            VALUE "ProductName",      "直达"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

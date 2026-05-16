@@ -1,0 +1,70 @@
+void MainWindow::OnPaint()
+{
+    PAINTSTRUCT ps;
+    HDC hdc;
+    RECT rc;
+    HDC memDC;
+    HBITMAP memBitmap;
+    HGDIOBJ oldBitmap;
+    const ThemeColors* theme;
+    HBRUSH bgBrush;
+    Gdiplus::Graphics* graphics;
+    Gdiplus::SolidBrush* titleBrush;
+    Gdiplus::FontFamily* fontFamily;
+    Gdiplus::Font* font;
+    Gdiplus::StringFormat* format;
+    Gdiplus::RectF titleRect;
+    std::vector<CardRect>::const_iterator it;
+
+    hdc = BeginPaint(m_hwnd, &ps);
+    GetClientRect(m_hwnd, &rc);
+
+    // 创建内存 DC - 双缓冲
+    memDC = CreateCompatibleDC(hdc);
+    memBitmap = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+    oldBitmap = SelectObject(memDC, memBitmap);
+
+    // 1. 使用 GDI 填充背景
+    theme = &Config::Themes[m_config.themeId];
+    bgBrush = CreateSolidBrush(theme->windowBg);
+    FillRect(memDC, &rc, bgBrush);
+    DeleteObject(bgBrush);
+
+    // 2. 使用 GDI+ 绘制
+    graphics = new Gdiplus::Graphics(memDC);
+    graphics->SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+    // 绘制标题
+    titleBrush = new Gdiplus::SolidBrush(ColorRefToGdiplus(theme->titleText));
+    fontFamily = new Gdiplus::FontFamily(L"Microsoft YaHei");
+    font = new Gdiplus::Font(fontFamily, 20, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    format = new Gdiplus::StringFormat();
+    format->SetAlignment(Gdiplus::StringAlignmentCenter);
+    format->SetLineAlignment(Gdiplus::StringAlignmentCenter);
+
+    titleRect = Gdiplus::RectF(0.0f, 8.0f, (Gdiplus::REAL)(rc.right - rc.left), 40.0f);
+    graphics->DrawString(L"Zhida", -1, font, titleRect, format, titleBrush);
+
+    // 绘制卡片
+    for (it = m_cardRects.begin(); it != m_cardRects.end(); ++it)
+    {
+        bool hovered = (it->index == m_hoveredCard);
+        DrawCard(*graphics, *it, hovered);
+    }
+
+    // 3. 复制到屏幕
+    BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memDC, 0, 0, SRCCOPY);
+
+    // 清理
+    delete titleBrush;
+    delete fontFamily;
+    delete font;
+    delete format;
+    delete graphics;
+
+    SelectObject(memDC, oldBitmap);
+    DeleteObject(memBitmap);
+    DeleteDC(memDC);
+
+    EndPaint(m_hwnd, &ps);
+}
