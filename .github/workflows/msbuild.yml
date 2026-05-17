@@ -44,4 +44,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: zhida-release
-        path: bin/Release/x64/直达.exe
+        path: 直达/bin/Release/x64/直达.exe
