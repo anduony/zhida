@@ -1,3 +1,8 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
 name: MSBuild
 
 on:
@@ -5,18 +10,21 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  # 可选：仅在创建 tag 时发布
-  # push:
-  #   tags:
-  #     - 'v*'
 
 env:
+  # Path to the project file
   PROJECT_FILE_PATH: 直达/直达.vcxproj
+
+  # Configuration type to build.
   BUILD_CONFIGURATION: Release
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
     - uses: actions/checkout@v5
 
@@ -37,19 +45,3 @@ jobs:
       with:
         name: zhida-release
         path: 直达/bin/Release/x64/直达.exe
-
-    # 添加自动发布到 Releases
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      with:
-        tag_name: v1.0.${{ github.run_number }}
-        name: Release v1.0.${{ github.run_number }}
-        body: |
-          自动构建发布
-          - 构建编号: ${{ github.run_number }}
-          - 提交: ${{ github.sha }}
-        files: |
-          直达/bin/Release/x64/直达.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
