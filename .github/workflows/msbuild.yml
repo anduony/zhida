@@ -12,9 +12,6 @@ on:
     branches: [ "main" ]
 
 env:
-  # Force Node.js 24 for actions (Node.js 20 is deprecated)
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  
   # Path to the solution file relative to the root of the project.
   SOLUTION_FILE_PATH: 直达.sln
 
@@ -31,13 +28,16 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
 
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      # 添加平台参数 x64，并指定项目文件
-      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=x64 ${{env.SOLUTION_FILE_PATH}}
+      run: |
+        $msbuildPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -prerelease -products * -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+        & $msbuildPath /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=x64 ${{env.SOLUTION_FILE_PATH}}
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
