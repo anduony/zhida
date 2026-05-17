@@ -77,6 +77,10 @@ void Config::LoadDefaults()
     shortcuts.push_back({ L"记事本", L"notepad.exe", L"app", 1, 1 });
     shortcuts.push_back({ L"画图", L"mspaint.exe", L"app", 1, 1 });
     shortcuts.push_back({ L"我的文档", L"shell:Personal", L"folder", 2, 2 });
+
+    groups.clear();
+    groups.push_back({ L"系统工具组", {0, 1} });
+    groups.push_back({ L"办公工具组", {2, 3, 4} });
 }
 
 static std::string EscapeJsonString(const std::string& str)
@@ -368,6 +372,102 @@ void Config::Load()
         LoadDefaults();
     }
 
+    size_t shortcutsArrayEnd = std::string::npos;
+    size_t shortcutsEndSearch = content.find("\"shortcuts\"");
+    if (shortcutsEndSearch != std::string::npos)
+    {
+        size_t arrayStart = content.find('[', shortcutsEndSearch);
+        if (arrayStart != std::string::npos)
+        {
+            int depth = 0;
+            for (size_t i = arrayStart; i < content.size(); i++)
+            {
+                if (content[i] == '[') depth++;
+                else if (content[i] == ']') { depth--; if (depth == 0) { shortcutsArrayEnd = i; break; } }
+            }
+        }
+    }
+
+    groups.clear();
+    size_t groupsSearchStart = (shortcutsArrayEnd != std::string::npos) ? shortcutsArrayEnd + 1 : 0;
+    size_t groupsPos = content.find("\"groups\"", groupsSearchStart);
+    if (groupsPos != std::string::npos)
+    {
+        size_t arrayStart = content.find('[', groupsPos);
+        if (arrayStart != std::string::npos)
+        {
+            int depth = 0;
+            size_t groupsArrayEnd = std::string::npos;
+            for (size_t i = arrayStart; i < content.size(); i++)
+            {
+                if (content[i] == '[') depth++;
+                else if (content[i] == ']') { depth--; if (depth == 0) { groupsArrayEnd = i; break; } }
+            }
+            if (groupsArrayEnd != std::string::npos)
+            {
+                size_t pos = arrayStart + 1;
+                while (pos < groupsArrayEnd)
+                {
+                    size_t objStart = content.find('{', pos);
+                    size_t objEnd = content.find('}', objStart);
+                    if (objStart == std::string::npos || objEnd == std::string::npos || objEnd > groupsArrayEnd)
+                        break;
+
+                    std::string objContent = content.substr(objStart + 1, objEnd - objStart - 1);
+                    removeNullBytes(objContent);
+
+                    CardGroup group;
+                    group.name = parseStringField(objContent, "name");
+                    trimWString(group.name);
+
+                    size_t indicesPos = objContent.find("\"shortcutIndices\"");
+                    if (indicesPos != std::string::npos)
+                    {
+                        size_t arrayStartIdx = objContent.find('[', indicesPos);
+                        size_t arrayEndIdx = objContent.find(']', arrayStartIdx);
+                        if (arrayStartIdx != std::string::npos && arrayEndIdx != std::string::npos)
+                        {
+                            std::string indicesStr = objContent.substr(arrayStartIdx + 1, arrayEndIdx - arrayStartIdx - 1);
+                            size_t idxPos = 0;
+                            while (idxPos < indicesStr.size())
+                            {
+                                while (idxPos < indicesStr.size() && (indicesStr[idxPos] == ' ' || indicesStr[idxPos] == ',')) idxPos++;
+                                if (idxPos >= indicesStr.size()) break;
+                                size_t numEnd = idxPos;
+                                while (numEnd < indicesStr.size() && indicesStr[numEnd] >= '0' && indicesStr[numEnd] <= '9') numEnd++;
+                                if (numEnd > idxPos)
+                                {
+                                    size_t idx = (size_t)std::atoi(indicesStr.substr(idxPos, numEnd - idxPos).c_str());
+                                    group.shortcutIndices.push_back(idx);
+                                }
+                                idxPos = numEnd;
+                            }
+                        }
+                    }
+
+                    if (!group.name.empty())
+                    {
+                        groups.push_back(group);
+                    }
+                    pos = objEnd + 1;
+                }
+            }
+        }
+    }
+
+    for (auto& group : groups)
+    {
+        std::vector<size_t> validIndices;
+        for (size_t idx : group.shortcutIndices)
+        {
+            if (idx < shortcuts.size())
+            {
+                validIndices.push_back(idx);
+            }
+        }
+        group.shortcutIndices = validIndices;
+    }
+
     int modifiers = MOD_ALT;
     int vkKey = 0x58;
     findInt("hotkeyModifiers", modifiers);
@@ -419,6 +519,25 @@ void Config::Save()
         oss << "      \"categoryIndex\": " << item.categoryIndex << "\n";
         oss << "    }";
         if (i != shortcuts.size() - 1) oss << ",";
+        oss << "\n";
+    }
+    oss << "  ],\n";
+
+    oss << "  \"groups\": [\n";
+    for (size_t i = 0; i < groups.size(); i++)
+    {
+        const auto& group = groups[i];
+        oss << "    {\n";
+        oss << "      \"name\": \"" << EscapeJsonString(WStringToString(group.name)) << "\",\n";
+        oss << "      \"shortcutIndices\": [";
+        for (size_t j = 0; j < group.shortcutIndices.size(); j++)
+        {
+            oss << group.shortcutIndices[j];
+            if (j != group.shortcutIndices.size() - 1) oss << ", ";
+        }
+        oss << "]\n";
+        oss << "    }";
+        if (i != groups.size() - 1) oss << ",";
         oss << "\n";
     }
     oss << "  ]\n";

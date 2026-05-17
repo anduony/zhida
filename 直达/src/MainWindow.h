@@ -22,6 +22,12 @@ struct CategoryHeaderRect
     int categoryIndex;
 };
 
+struct CardGroupRect
+{
+    RECT rc;
+    size_t groupIndex;
+};
+
 class MainWindow
 {
 public:
@@ -98,17 +104,35 @@ private:
     static LRESULT CALLBACK AddCategoryWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleAddCategoryMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+    void LaunchGroupShortcuts(size_t groupIndex);
+    void ShowGroupLaunchResult(const std::vector<std::wstring>& successNames, const std::vector<std::pair<std::wstring, std::wstring>>& failures);
+
+    void OpenGroupManager();
+    void CloseGroupManager();
+    void CreateGroupManagerWindow();
+    static LRESULT CALLBACK GroupManagerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleGroupManagerMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void RefreshGroupList(HWND hwnd);
+    void OpenAddGroupDialog();
+    void OpenEditGroupDialog(int editIndex);
+    void OpenAddGroupDialogInternal();
+    static LRESULT CALLBACK AddGroupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleAddGroupMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
     HWND m_hwnd;
     HWND m_settingsHwnd;
     HWND m_helpHwnd;
     HWND m_addShortcutHwnd;
     HWND m_categoryManagerHwnd;
     HWND m_addCategoryHwnd;
+    HWND m_groupManagerHwnd;
+    HWND m_addGroupHwnd;
     HINSTANCE m_hInstance;
     ULONG_PTR m_gdiplusToken;
     Gdiplus::GdiplusStartupInput m_gdiplusInput;
 
     int m_editCategoryIndex;
+    int m_editGroupIndex;
 
     NOTIFYICONDATAW m_nid;
     bool m_trayIconAdded;
@@ -116,7 +140,9 @@ private:
     Config m_config;
     std::vector<CardRect> m_cardRects;
     std::vector<CategoryHeaderRect> m_categoryHeaders;
+    std::vector<CardGroupRect> m_groupRects;
     size_t m_hoveredCard;
+    size_t m_hoveredGroup;
     size_t m_rightClickedCard;
     bool m_mouseDown;
 

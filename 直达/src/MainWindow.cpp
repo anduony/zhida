@@ -71,6 +71,23 @@ static const wchar_t* GetSystemUIFont()
     return fontName;
 }
 
+static void SetDialogFont(HWND hwnd)
+{
+    NONCLIENTMETRICSW ncm = { 0 };
+    ncm.cbSize = sizeof(NONCLIENTMETRICSW);
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0);
+    
+    HFONT hFont = CreateFontIndirectW(&ncm.lfMessageFont);
+    if (hFont)
+    {
+        SendMessageW(hwnd, WM_SETFONT, (WPARAM)hFont, TRUE);
+        EnumChildWindows(hwnd, [](HWND hChild, LPARAM lParam) -> BOOL {
+            SendMessageW(hChild, WM_SETFONT, lParam, TRUE);
+            return TRUE;
+        }, (LPARAM)hFont);
+    }
+}
+
 MainWindow::MainWindow()
     : m_hwnd(NULL)
     , m_settingsHwnd(NULL)
@@ -78,9 +95,12 @@ MainWindow::MainWindow()
     , m_addShortcutHwnd(NULL)
     , m_categoryManagerHwnd(NULL)
     , m_addCategoryHwnd(NULL)
+    , m_groupManagerHwnd(NULL)
+    , m_addGroupHwnd(NULL)
     , m_hInstance(NULL)
     , m_trayIconAdded(false)
     , m_hoveredCard((size_t)-1)
+    , m_hoveredGroup((size_t)-1)
     , m_rightClickedCard((size_t)-1)
     , m_mouseDown(false)
     , m_gdiplusToken(0)
@@ -88,6 +108,7 @@ MainWindow::MainWindow()
     , m_maxScrollPos(0)
     , m_selectedCategoryColorIndex(0)
     , m_editCategoryIndex(-1)
+    , m_editGroupIndex(-1)
 {
     ZeroMemory(&m_nid, sizeof(m_nid));
 }
@@ -281,6 +302,8 @@ void MainWindow::OnDestroy()
     if (m_addShortcutHwnd && IsWindow(m_addShortcutHwnd)) { DestroyWindow(m_addShortcutHwnd); m_addShortcutHwnd = NULL; }
     if (m_categoryManagerHwnd && IsWindow(m_categoryManagerHwnd)) { DestroyWindow(m_categoryManagerHwnd); m_categoryManagerHwnd = NULL; }
     if (m_addCategoryHwnd && IsWindow(m_addCategoryHwnd)) { DestroyWindow(m_addCategoryHwnd); m_addCategoryHwnd = NULL; }
+    if (m_groupManagerHwnd && IsWindow(m_groupManagerHwnd)) { DestroyWindow(m_groupManagerHwnd); m_groupManagerHwnd = NULL; }
+    if (m_addGroupHwnd && IsWindow(m_addGroupHwnd)) { DestroyWindow(m_addGroupHwnd); m_addGroupHwnd = NULL; }
     m_config.Save();
     Gdiplus::GdiplusShutdown(m_gdiplusToken);
 }
@@ -382,6 +405,7 @@ void MainWindow::UpdateCardLayout()
 {
     m_cardRects.clear();
     m_categoryHeaders.clear();
+    m_groupRects.clear();
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     int clientWidth = rc.right - rc.left;
@@ -443,6 +467,32 @@ void MainWindow::UpdateCardLayout()
         currentY += CARD_PADDING / 2;
     }
 
+    if (!m_config.groups.empty())
+    {
+        currentY += CARD_PADDING;
+
+        CategoryHeaderRect groupSectionHeader;
+        groupSectionHeader.rc.left = CARD_PADDING;
+        groupSectionHeader.rc.top = currentY;
+        groupSectionHeader.rc.right = clientWidth - CARD_PADDING;
+        groupSectionHeader.rc.bottom = currentY + CATEGORY_HEADER_HEIGHT;
+        groupSectionHeader.categoryIndex = -1;
+        m_categoryHeaders.push_back(groupSectionHeader);
+        currentY += CATEGORY_HEADER_HEIGHT;
+
+        for (size_t groupIdx = 0; groupIdx < m_config.groups.size(); ++groupIdx)
+        {
+            CardGroupRect groupRect;
+            groupRect.rc.left = CARD_PADDING;
+            groupRect.rc.top = currentY;
+            groupRect.rc.right = clientWidth - CARD_PADDING;
+            groupRect.rc.bottom = currentY + CARD_HEIGHT;
+            groupRect.groupIndex = groupIdx;
+            m_groupRects.push_back(groupRect);
+            currentY += CARD_HEIGHT + CARD_GAP;
+        }
+    }
+
     int totalHeight = currentY + CARD_PADDING;
     int clientHeight = WINDOW_HEIGHT - 40;
     m_maxScrollPos = max(0, totalHeight - clientHeight);
@@ -497,9 +547,11 @@ void MainWindow::OnMouseMove(LPARAM lParam)
 {
     int x = LOWORD(lParam);
     int y = HIWORD(lParam) + m_scrollPos;
-    size_t prevHovered = m_hoveredCard;
+    size_t prevHoveredCard = m_hoveredCard;
+    size_t prevHoveredGroup = m_hoveredGroup;
 
     m_hoveredCard = (size_t)-1;
+    m_hoveredGroup = (size_t)-1;
 
     for (size_t i = 0; i < m_cardRects.size(); ++i)
     {
@@ -511,7 +563,20 @@ void MainWindow::OnMouseMove(LPARAM lParam)
         }
     }
 
-    if (m_hoveredCard != prevHovered)
+    if (m_hoveredCard == (size_t)-1)
+    {
+        for (size_t i = 0; i < m_groupRects.size(); ++i)
+        {
+            const auto& group = m_groupRects[i];
+            if (x >= group.rc.left && x < group.rc.right && y >= group.rc.top && y < group.rc.bottom)
+            {
+                m_hoveredGroup = i;
+                break;
+            }
+        }
+    }
+
+    if (m_hoveredCard != prevHoveredCard || m_hoveredGroup != prevHoveredGroup)
     {
         InvalidateRect(m_hwnd, NULL, FALSE);
     }
@@ -521,6 +586,8 @@ void MainWindow::OnLButtonDown(LPARAM lParam)
 {
     int x = LOWORD(lParam);
     int y = HIWORD(lParam) + m_scrollPos;
+    bool handled = false;
+
     for (size_t i = 0; i < m_cardRects.size(); ++i)
     {
         const auto& card = m_cardRects[i];
@@ -535,7 +602,21 @@ void MainWindow::OnLButtonDown(LPARAM lParam)
             {
                 LaunchShortcut(card.index);
             }
+            handled = true;
             break;
+        }
+    }
+
+    if (!handled)
+    {
+        for (size_t i = 0; i < m_groupRects.size(); ++i)
+        {
+            const auto& group = m_groupRects[i];
+            if (x >= group.rc.left && x < group.rc.right && y >= group.rc.top && y < group.rc.bottom)
+            {
+                LaunchGroupShortcuts(group.groupIndex);
+                break;
+            }
         }
     }
 }
@@ -597,6 +678,83 @@ void MainWindow::LaunchShortcut(size_t index)
     Hide();
 }
 
+void MainWindow::LaunchGroupShortcuts(size_t groupIndex)
+{
+    if (groupIndex >= m_config.groups.size()) return;
+
+    const auto& group = m_config.groups[groupIndex];
+    std::vector<std::wstring> successNames;
+    std::vector<std::pair<std::wstring, std::wstring>> failures;
+
+    for (size_t idx : group.shortcutIndices)
+    {
+        if (idx >= m_config.shortcuts.size())
+            continue;
+
+        const auto& item = m_config.shortcuts[idx];
+        HINSTANCE result = ShellExecuteW(NULL, L"open", item.path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        
+        if ((int)result > 32)
+        {
+            successNames.push_back(item.name);
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            std::wstring errorMsg;
+            switch (error)
+            {
+            case ERROR_FILE_NOT_FOUND:
+                errorMsg = L"文件未找到";
+                break;
+            case ERROR_PATH_NOT_FOUND:
+                errorMsg = L"路径未找到";
+                break;
+            case ERROR_ACCESS_DENIED:
+                errorMsg = L"访问被拒绝";
+                break;
+            default:
+                errorMsg = L"启动失败 (错误码: " + std::to_wstring(error) + L")";
+            }
+            failures.push_back({ item.name, errorMsg });
+        }
+    }
+
+    Hide();
+
+    if (!successNames.empty() || !failures.empty())
+    {
+        ShowGroupLaunchResult(successNames, failures);
+    }
+}
+
+void MainWindow::ShowGroupLaunchResult(const std::vector<std::wstring>& successNames, const std::vector<std::pair<std::wstring, std::wstring>>& failures)
+{
+    std::wstring message;
+
+    if (!successNames.empty())
+    {
+        message += L"已成功启动:\n";
+        for (const auto& name : successNames)
+        {
+            message += L"  • " + name + L"\n";
+        }
+    }
+
+    if (!failures.empty())
+    {
+        if (!message.empty())
+            message += L"\n";
+        message += L"启动失败:\n";
+        for (const auto& failure : failures)
+        {
+            message += L"  • " + failure.first + L": " + failure.second + L"\n";
+        }
+    }
+
+    MessageBoxW(NULL, message.c_str(), L"快捷组启动结果", MB_OK | MB_ICONINFORMATION);
+}
+
 void MainWindow::DeleteShortcut(size_t index)
 {
     if (index >= m_config.shortcuts.size()) return;
@@ -636,6 +794,7 @@ void MainWindow::OnPaint()
     Gdiplus::Graphics graphics(hdcMem);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
 
     Gdiplus::RectF clipRect(0.0f, 0.0f, (Gdiplus::REAL)rc.right - rc.left, (Gdiplus::REAL)(rc.bottom - rc.top));
 
@@ -670,6 +829,20 @@ void MainWindow::OnPaint()
             catFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
             Gdiplus::RectF catTextRect(headerRect.X + 12, headerRect.Y, headerRect.Width - 12, headerRect.Height);
             graphics.DrawString(cat.name.c_str(), -1, &catFont, catTextRect, &catFormat, &catTextBrush);
+        }
+        else if (header.categoryIndex == -1)
+        {
+            Gdiplus::Color groupColor = Gdiplus::Color(126, 87, 194);
+            Gdiplus::SolidBrush barBrush(groupColor);
+            graphics.FillRectangle(&barBrush, Gdiplus::RectF(headerRect.X, headerRect.Y + 8, 4.0f, headerRect.Height - 16));
+
+            Gdiplus::Font catFont(GetSystemUIFont(), 15, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::SolidBrush catTextBrush(groupColor);
+            Gdiplus::StringFormat catFormat;
+            catFormat.SetAlignment(Gdiplus::StringAlignmentNear);
+            catFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::RectF catTextRect(headerRect.X + 12, headerRect.Y, headerRect.Width - 12, headerRect.Height);
+            graphics.DrawString(L"快捷组", -1, &catFont, catTextRect, &catFormat, &catTextBrush);
         }
     }
 
@@ -745,7 +918,7 @@ void MainWindow::OnPaint()
 
         if (card.isAddButton)
         {
-            Gdiplus::Font addFont(GetSystemUIFont(), 15, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font addFont(GetSystemUIFont(), 15, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
             Gdiplus::Color addColor = Gdiplus::Color(80, 120, 255);
             if (card.categoryIndex >= 0 && card.categoryIndex < (int)m_config.categories.size())
             {
@@ -761,6 +934,68 @@ void MainWindow::OnPaint()
             textRect.X += 16;
             textRect.Width -= 16;
             graphics.DrawString(item.name.c_str(), -1, &cardFont, textRect, &cardFormat, &textBrush);
+        }
+    }
+
+    for (size_t i = 0; i < m_groupRects.size(); ++i)
+    {
+        const CardGroupRect& group = m_groupRects[i];
+        bool isHovered = (m_hoveredGroup == i);
+
+        Gdiplus::RectF groupRect(
+            (Gdiplus::REAL)group.rc.left,
+            (Gdiplus::REAL)group.rc.top - (Gdiplus::REAL)m_scrollPos,
+            (Gdiplus::REAL)(group.rc.right - group.rc.left),
+            (Gdiplus::REAL)(group.rc.bottom - group.rc.top)
+        );
+
+        if (groupRect.Y + groupRect.Height < 0 || groupRect.Y > rc.bottom - rc.top)
+            continue;
+
+        Gdiplus::Color fillColor = Gdiplus::Color(248, 245, 252);
+        Gdiplus::Color borderColor = Gdiplus::Color(180, 160, 220);
+
+        if (isHovered)
+        {
+            fillColor = Gdiplus::Color(255, 253, 255);
+            borderColor = Gdiplus::Color(126, 87, 194);
+        }
+
+        DrawRoundedRect(graphics, groupRect, 14.0f, fillColor, borderColor, true, isHovered);
+
+        Gdiplus::Color groupBarColor = Gdiplus::Color(126, 87, 194);
+        Gdiplus::SolidBrush leftBarBrush(groupBarColor);
+        graphics.FillRectangle(&leftBarBrush, Gdiplus::RectF(groupRect.X + 8, groupRect.Y + 8, 4, groupRect.Height - 16));
+
+        const auto& groupData = m_config.groups[group.groupIndex];
+        Gdiplus::RectF groupTextRect = groupRect;
+        groupTextRect.X += 16;
+
+        Gdiplus::Font groupNameFont(GetSystemUIFont(), 14, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush groupNameBrush(Gdiplus::Color(60, 50, 80));
+        graphics.DrawString(groupData.name.c_str(), -1, &groupNameFont, groupTextRect, &cardFormat, &groupNameBrush);
+
+        if (!groupData.shortcutIndices.empty())
+        {
+            std::wstring membersText = L"(";
+            for (size_t j = 0; j < groupData.shortcutIndices.size(); ++j)
+            {
+                if (j > 0) membersText += L", ";
+                size_t idx = groupData.shortcutIndices[j];
+                if (idx < m_config.shortcuts.size())
+                {
+                    membersText += m_config.shortcuts[idx].name;
+                }
+            }
+            membersText += L")";
+
+            Gdiplus::Font membersFont(GetSystemUIFont(), 11, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+            Gdiplus::SolidBrush membersBrush(Gdiplus::Color(120, 100, 160));
+            Gdiplus::StringFormat membersFormat;
+            membersFormat.SetAlignment(Gdiplus::StringAlignmentFar);
+            membersFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::RectF membersRect(groupRect.X + 16, groupRect.Y, groupRect.Width - 32, groupRect.Height);
+            graphics.DrawString(membersText.c_str(), -1, &membersFont, membersRect, &membersFormat, &membersBrush);
         }
     }
 
@@ -847,8 +1082,11 @@ void MainWindow::CreateSettingsWindow()
         SendMessageW(hAutoStartCheck, BM_SETCHECK, m_config.autoStart ? BST_CHECKED : BST_UNCHECKED, 0);
         
         CreateWindowW(L"BUTTON", L"管理分类", WS_CHILD | WS_VISIBLE, 40, 300, 130, 36, m_settingsHwnd, (HMENU)120, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"管理快捷组", WS_CHILD | WS_VISIBLE, 180, 300, 130, 36, m_settingsHwnd, (HMENU)121, m_hInstance, NULL);
         CreateWindowW(L"BUTTON", L"保存", WS_CHILD | WS_VISIBLE, 220, 360, 100, 36, m_settingsHwnd, (HMENU)IDOK, m_hInstance, NULL);
         CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 340, 360, 100, 36, m_settingsHwnd, (HMENU)IDCANCEL, m_hInstance, NULL);
+        
+        SetDialogFont(m_settingsHwnd);
         
         ShowWindow(m_settingsHwnd, SW_SHOW);
         SetForegroundWindow(m_settingsHwnd);
@@ -950,6 +1188,11 @@ LRESULT MainWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LP
             OpenCategoryManager();
             return 0;
         }
+        else if (id == 121)
+        {
+            OpenGroupManager();
+            return 0;
+        }
         return 0;
     }
     case WM_CLOSE:
@@ -1009,7 +1252,7 @@ void MainWindow::CreateHelpWindow()
     RegisterClassExW(&wcex);
 
     int helpWidth = 520;
-    int helpHeight = 500;
+    int helpHeight = 600;
     RECT rcMain;
     GetWindowRect(m_hwnd, &rcMain);
     int x = rcMain.left + (rcMain.right - rcMain.left - helpWidth) / 2;
@@ -1057,6 +1300,7 @@ LRESULT MainWindow::HandleHelpMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         Gdiplus::Graphics graphics(hdc);
         graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
 
         Gdiplus::Font titleFont(GetSystemUIFont(), 22, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
         Gdiplus::SolidBrush titleBrush(Gdiplus::Color(50, 60, 80));
@@ -1071,8 +1315,17 @@ LRESULT MainWindow::HandleHelpMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         textFormat.SetAlignment(Gdiplus::StringAlignmentNear);
         textFormat.SetLineAlignment(Gdiplus::StringAlignmentNear);
 
+        const wchar_t* versionText =
+            L"软件版本：v1.0.0\n"
+            L"更新日期：2026年5月\n"
+            L"主要特性：\n"
+            L"  • 支持快捷方式分类管理\n"
+            L"  • 卡片组一键启动功能\n"
+            L"  • 自定义全局快捷键\n"
+            L"  • 开机自动启动\n\n";
+
         const wchar_t* helpText =
-            L"\n快捷键使用：\n"
+            L"快捷键使用：\n"
             L"  • 使用快捷键（默认 Alt+X）可快速显示/隐藏窗口\n\n"
             L"添加快捷方式：\n"
             L"  • 点击每个分类下的 \"+ 添加\" 按钮\n"
@@ -1082,11 +1335,33 @@ LRESULT MainWindow::HandleHelpMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             L"分类管理：\n"
             L"  • 在设置中点击\"管理分类\"\n"
             L"  • 可添加、删除分类，选择分类颜色\n\n"
+            L"卡片组功能：\n"
+            L"  • 在设置中点击\"管理快捷组\"\n"
+            L"  • 创建包含多个快捷方式的组\n"
+            L"  • 点击组名一键启动所有成员\n\n"
             L"滚动查看：\n"
-            L"  • 使用鼠标滚轮或右侧滚动条查看更多";
+            L"  • 使用鼠标滚轮或右侧滚动条查看更多\n\n";
 
-        Gdiplus::RectF contentRect(50, 90, (Gdiplus::REAL)rc.right - rc.left - 100, (Gdiplus::REAL)rc.bottom - rc.top - 150);
+        const wchar_t* privacyText =
+            L"隐私说明：\n"
+            L"  • 本软件仅在首次启动时收集一次用户IP地址信息\n"
+            L"  • 该信息仅用于统计软件安装量及地域分布分析\n"
+            L"  • 不会与用户个人身份信息关联\n"
+            L"  • 不会用于其他任何目的";
+
+        Gdiplus::Font versionFont(GetSystemUIFont(), 12, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush versionBrush(Gdiplus::Color(126, 87, 194));
+        Gdiplus::RectF versionRect(50, 90, (Gdiplus::REAL)rc.right - rc.left - 100, 120);
+        graphics.DrawString(versionText, -1, &versionFont, versionRect, &textFormat, &versionBrush);
+
+        int privacyTop = rc.bottom - rc.top - 110;
+        Gdiplus::RectF contentRect(50, 210, (Gdiplus::REAL)rc.right - rc.left - 100, (Gdiplus::REAL)(privacyTop - 220));
         graphics.DrawString(helpText, -1, &contentFont, contentRect, &textFormat, &textBrush);
+
+        Gdiplus::Font privacyFont(GetSystemUIFont(), 12, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush privacyBrush(Gdiplus::Color(60, 140, 80));
+        Gdiplus::RectF privacyRect(50, privacyTop, (Gdiplus::REAL)rc.right - rc.left - 100, 100);
+        graphics.DrawString(privacyText, -1, &privacyFont, privacyRect, &textFormat, &privacyBrush);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -1149,6 +1424,8 @@ void MainWindow::CreateAddShortcutWindow()
 
         CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE, 210, 360, 110, 40, m_addShortcutHwnd, (HMENU)IDOK, m_hInstance, NULL);
         CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 330, 360, 110, 40, m_addShortcutHwnd, (HMENU)IDCANCEL, m_hInstance, NULL);
+
+        SetDialogFont(m_addShortcutHwnd);
 
         ShowWindow(m_addShortcutHwnd, SW_SHOW);
         SetForegroundWindow(m_addShortcutHwnd);
@@ -1323,6 +1600,8 @@ void MainWindow::CreateCategoryManagerWindow()
         CreateWindowW(L"BUTTON", L"关闭", WS_CHILD | WS_VISIBLE, 170, 340, 130, 36, m_categoryManagerHwnd, (HMENU)IDCANCEL, m_hInstance, NULL);
 
         RefreshCategoryList(m_categoryManagerHwnd);
+
+        SetDialogFont(m_categoryManagerHwnd);
 
         ShowWindow(m_categoryManagerHwnd, SW_SHOW);
         SetForegroundWindow(m_categoryManagerHwnd);
@@ -1505,6 +1784,8 @@ void MainWindow::OpenAddCategoryDialogInternal()
             SetDlgItemTextW(m_addCategoryHwnd, 300, m_config.categories[m_editCategoryIndex].name.c_str());
         }
 
+        SetDialogFont(m_addCategoryHwnd);
+
         ShowWindow(m_addCategoryHwnd, SW_SHOW);
         SetForegroundWindow(m_addCategoryHwnd);
         UpdateWindow(m_addCategoryHwnd);
@@ -1633,4 +1914,338 @@ LRESULT MainWindow::HandleAddCategoryMessage(HWND hwnd, UINT msg, WPARAM wParam,
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
+}
+
+void MainWindow::OpenGroupManager()
+{
+    if (m_groupManagerHwnd && IsWindow(m_groupManagerHwnd)) { SetForegroundWindow(m_groupManagerHwnd); return; }
+    CreateGroupManagerWindow();
+}
+
+void MainWindow::CloseGroupManager()
+{
+    if (m_groupManagerHwnd && IsWindow(m_groupManagerHwnd)) { DestroyWindow(m_groupManagerHwnd); m_groupManagerHwnd = NULL; }
+}
+
+void MainWindow::CreateGroupManagerWindow()
+{
+    WNDCLASSEXW wcex = { 0 };
+    wcex.cbSize = sizeof(WNDCLASSEXW);
+    wcex.lpfnWndProc = GroupManagerWindowProc;
+    wcex.cbWndExtra = sizeof(LONG_PTR);
+    wcex.hInstance = m_hInstance;
+    wcex.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wcex.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wcex.lpszClassName = L"ZhidaGroupManagerWindow";
+    RegisterClassExW(&wcex);
+
+    int winWidth = 520;
+    int winHeight = 460;
+    RECT rcMain;
+    GetWindowRect(m_hwnd, &rcMain);
+    int x = rcMain.left + (rcMain.right - rcMain.left - winWidth) / 2;
+    int y = rcMain.top + 50;
+
+    m_groupManagerHwnd = CreateWindowExW(0, L"ZhidaGroupManagerWindow", L"管理快捷组",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, winWidth, winHeight,
+        m_hwnd, NULL, m_hInstance, this);
+
+    if (m_groupManagerHwnd)
+    {
+        CreateWindowW(L"STATIC", L"已有快捷组:", WS_CHILD | WS_VISIBLE, 30, 20, 150, 24, m_groupManagerHwnd, NULL, m_hInstance, NULL);
+        CreateWindowW(L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY, 30, 50, 460, 220, m_groupManagerHwnd, (HMENU)300, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"添加快捷组", WS_CHILD | WS_VISIBLE, 30, 290, 130, 36, m_groupManagerHwnd, (HMENU)301, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"编辑快捷组", WS_CHILD | WS_VISIBLE, 170, 290, 130, 36, m_groupManagerHwnd, (HMENU)303, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"删除快捷组", WS_CHILD | WS_VISIBLE, 310, 290, 130, 36, m_groupManagerHwnd, (HMENU)302, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"关闭", WS_CHILD | WS_VISIBLE, 190, 340, 130, 36, m_groupManagerHwnd, (HMENU)IDCANCEL, m_hInstance, NULL);
+
+        RefreshGroupList(m_groupManagerHwnd);
+
+        SetDialogFont(m_groupManagerHwnd);
+
+        ShowWindow(m_groupManagerHwnd, SW_SHOW);
+        SetForegroundWindow(m_groupManagerHwnd);
+        UpdateWindow(m_groupManagerHwnd);
+    }
+}
+
+void MainWindow::RefreshGroupList(HWND hwnd)
+{
+    HWND hList = GetDlgItem(hwnd, 300);
+    if (!hList) return;
+    SendMessageW(hList, LB_RESETCONTENT, 0, 0);
+    for (size_t i = 0; i < m_config.groups.size(); ++i)
+    {
+        const auto& group = m_config.groups[i];
+        std::wstring displayName = group.name + L" (" + std::to_wstring(group.shortcutIndices.size()) + L" 个快捷方式)";
+        SendMessageW(hList, LB_ADDSTRING, 0, (LPARAM)displayName.c_str());
+    }
+}
+
+LRESULT CALLBACK MainWindow::GroupManagerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_NCCREATE)
+    {
+        LPCREATESTRUCT lpcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
+        MainWindow* pThis = static_cast<MainWindow*>(lpcs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+    }
+    MainWindow* pThis = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (pThis) return pThis->HandleGroupManagerMessage(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT MainWindow::HandleGroupManagerMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORDLG:
+        return HandleCtlColor(wParam);
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        int notifyCode = HIWORD(wParam);
+        if (id == 300 && notifyCode == LBN_DBLCLK)
+        {
+            HWND hList = GetDlgItem(hwnd, 300);
+            int sel = (int)SendMessageW(hList, LB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < (int)m_config.groups.size())
+            {
+                OpenEditGroupDialog(sel);
+            }
+            return 0;
+        }
+        if (id == 301)
+        {
+            OpenAddGroupDialog();
+            return 0;
+        }
+        else if (id == 302)
+        {
+            HWND hList = GetDlgItem(hwnd, 300);
+            int sel = (int)SendMessageW(hList, LB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < (int)m_config.groups.size())
+            {
+                int result = MessageBoxW(hwnd, L"确定要删除该快捷组吗？", L"删除确认", MB_YESNO | MB_ICONQUESTION);
+                if (result == IDYES)
+                {
+                    m_config.groups.erase(m_config.groups.begin() + sel);
+                    m_config.Save();
+                    RefreshGroupList(hwnd);
+                    RefreshUI();
+                }
+            }
+            return 0;
+        }
+        else if (id == 303)
+        {
+            HWND hList = GetDlgItem(hwnd, 300);
+            int sel = (int)SendMessageW(hList, LB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < (int)m_config.groups.size())
+            {
+                OpenEditGroupDialog(sel);
+            }
+            return 0;
+        }
+        else if (id == IDCANCEL)
+        {
+            CloseGroupManager();
+            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        CloseGroupManager();
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+void MainWindow::OpenAddGroupDialog()
+{
+    m_editGroupIndex = -1;
+    OpenAddGroupDialogInternal();
+}
+
+void MainWindow::OpenEditGroupDialog(int editIndex)
+{
+    m_editGroupIndex = editIndex;
+    OpenAddGroupDialogInternal();
+}
+
+void MainWindow::OpenAddGroupDialogInternal()
+{
+    WNDCLASSEXW wcex = { 0 };
+    wcex.cbSize = sizeof(WNDCLASSEXW);
+    wcex.lpfnWndProc = AddGroupWindowProc;
+    wcex.cbWndExtra = sizeof(LONG_PTR);
+    wcex.hInstance = m_hInstance;
+    wcex.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wcex.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wcex.lpszClassName = L"ZhidaAddGroupWindow";
+    RegisterClassExW(&wcex);
+
+    int winWidth = 460;
+    int winHeight = 440;
+    RECT rcMgr;
+    if (m_groupManagerHwnd && IsWindow(m_groupManagerHwnd))
+    {
+        GetWindowRect(m_groupManagerHwnd, &rcMgr);
+    }
+    else
+    {
+        GetWindowRect(m_hwnd, &rcMgr);
+    }
+    int x = rcMgr.left + (rcMgr.right - rcMgr.left - winWidth) / 2;
+    int y = rcMgr.top + (rcMgr.bottom - rcMgr.top - winHeight) / 2;
+
+    const wchar_t* dialogTitle = L"添加快捷组";
+    if (m_editGroupIndex >= 0 && m_editGroupIndex < (int)m_config.groups.size())
+    {
+        dialogTitle = L"编辑快捷组";
+    }
+
+    m_addGroupHwnd = CreateWindowExW(0, L"ZhidaAddGroupWindow", dialogTitle,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, winWidth, winHeight,
+        m_groupManagerHwnd, NULL, m_hInstance, this);
+
+    if (m_addGroupHwnd)
+    {
+        CreateWindowW(L"STATIC", L"组名称:", WS_CHILD | WS_VISIBLE, 30, 30, 120, 24, m_addGroupHwnd, NULL, m_hInstance, NULL);
+        CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 30, 58, 400, 32, m_addGroupHwnd, (HMENU)400, m_hInstance, NULL);
+        CreateWindowW(L"STATIC", L"选择成员（可多选）:", WS_CHILD | WS_VISIBLE, 30, 110, 200, 24, m_addGroupHwnd, NULL, m_hInstance, NULL);
+        CreateWindowW(L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_MULTIPLESEL | LBS_NOTIFY, 30, 140, 400, 200, m_addGroupHwnd, (HMENU)401, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE, 140, 360, 110, 40, m_addGroupHwnd, (HMENU)IDOK, m_hInstance, NULL);
+        CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 270, 360, 110, 40, m_addGroupHwnd, (HMENU)IDCANCEL, m_hInstance, NULL);
+
+        HWND hList = GetDlgItem(m_addGroupHwnd, 401);
+        for (size_t i = 0; i < m_config.shortcuts.size(); ++i)
+        {
+            SendMessageW(hList, LB_ADDSTRING, 0, (LPARAM)m_config.shortcuts[i].name.c_str());
+        }
+
+        if (m_editGroupIndex >= 0 && m_editGroupIndex < (int)m_config.groups.size())
+        {
+            SetDlgItemTextW(m_addGroupHwnd, 400, m_config.groups[m_editGroupIndex].name.c_str());
+            const auto& group = m_config.groups[m_editGroupIndex];
+            for (size_t idx : group.shortcutIndices)
+            {
+                SendMessageW(hList, LB_SETSEL, TRUE, (LPARAM)idx);
+            }
+        }
+
+        SetDialogFont(m_addGroupHwnd);
+
+        ShowWindow(m_addGroupHwnd, SW_SHOW);
+        SetForegroundWindow(m_addGroupHwnd);
+        UpdateWindow(m_addGroupHwnd);
+    }
+}
+
+LRESULT CALLBACK MainWindow::AddGroupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_NCCREATE)
+    {
+        LPCREATESTRUCT lpcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
+        MainWindow* pThis = static_cast<MainWindow*>(lpcs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+    }
+    MainWindow* pThis = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (pThis) return pThis->HandleAddGroupMessage(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT MainWindow::HandleAddGroupMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORDLG:
+        return HandleCtlColor(wParam);
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_COMMAND:
+    {
+        if (LOWORD(wParam) == IDOK)
+        {
+            wchar_t nameBuf[256];
+            GetDlgItemTextW(hwnd, 400, nameBuf, 256);
+
+            if (wcslen(nameBuf) == 0)
+            {
+                MessageBoxW(hwnd, L"请输入组名称", L"提示", MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+
+            HWND hList = GetDlgItem(hwnd, 401);
+            int count = (int)SendMessageW(hList, LB_GETCOUNT, 0, 0);
+
+            CardGroup group;
+            group.name = nameBuf;
+
+            for (int i = 0; i < count; ++i)
+            {
+                if (SendMessageW(hList, LB_GETSEL, i, 0))
+                {
+                    group.shortcutIndices.push_back((size_t)i);
+                }
+            }
+
+            if (m_editGroupIndex >= 0 && m_editGroupIndex < (int)m_config.groups.size())
+            {
+                m_config.groups[m_editGroupIndex] = group;
+            }
+            else
+            {
+                m_config.groups.push_back(group);
+            }
+
+            m_config.Save();
+
+            if (m_groupManagerHwnd && IsWindow(m_groupManagerHwnd))
+            {
+                RefreshGroupList(m_groupManagerHwnd);
+            }
+            RefreshUI();
+
+            DestroyWindow(hwnd);
+            m_addGroupHwnd = NULL;
+            return 0;
+        }
+        else if (LOWORD(wParam) == IDCANCEL)
+        {
+            DestroyWindow(hwnd);
+            m_addGroupHwnd = NULL;
+            return 0;
+        }
+        break;
+    }
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        m_addGroupHwnd = NULL;
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    return 0;
 }
