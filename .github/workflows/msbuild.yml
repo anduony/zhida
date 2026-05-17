@@ -36,7 +36,9 @@ jobs:
         $vswherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
         $msbuildPath = & $vswherePath -latest -products * -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
         Write-Host "MSBuild Path: $msbuildPath"
-        & "$msbuildPath" /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=x64 "${{env.GITHUB_WORKSPACE}}\${{env.PROJECT_FILE_PATH}}"
+        $projectPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "${{env.PROJECT_FILE_PATH}}"
+        Write-Host "Project Path: $projectPath"
+        & "$msbuildPath" /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=x64 "$projectPath"
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
