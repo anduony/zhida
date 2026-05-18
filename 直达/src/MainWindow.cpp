@@ -388,7 +388,8 @@ void MainWindow::OnTrayCommand(int id)
 
 void MainWindow::RegisterGlobalHotKey()
 {
-    RegisterHotKey(m_hwnd, 1, m_config.hotkeyModifiers, m_config.hotkeyVk);
+    // 添加 MOD_NOREPEAT 标志防止重复触发
+    RegisterHotKey(m_hwnd, 1, m_config.hotkeyModifiers | MOD_NOREPEAT, m_config.hotkeyVk);
 }
 
 void MainWindow::UnregisterGlobalHotKey()
@@ -1071,11 +1072,8 @@ void MainWindow::CreateSettingsWindow()
         {
             swprintf_s(vkStr, L"F%d", m_config.hotkeyVk - 0x70 + 1);
         }
-        CreateWindowW(L"EDIT", vkStr, WS_CHILD | WS_VISIBLE | WS_BORDER, 310, 150, 80, 28, m_settingsHwnd, (HMENU)105, m_hInstance, NULL);
-        {
-            HWND hKeyEdit = GetDlgItem(m_settingsHwnd, 105);
-            SetWindowLongPtrW(hKeyEdit, GWLP_USERDATA, (LONG_PTR)m_config.hotkeyVk);
-        }
+        HWND hKeyEdit = CreateWindowW(L"EDIT", vkStr, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_READONLY, 310, 150, 80, 28, m_settingsHwnd, (HMENU)105, m_hInstance, NULL);
+        SetWindowLongPtrW(hKeyEdit, GWLP_USERDATA, (LONG_PTR)m_config.hotkeyVk);
         
         CreateWindowW(L"STATIC", L"启动设置", WS_CHILD | WS_VISIBLE, 40, 210, 150, 24, m_settingsHwnd, NULL, m_hInstance, NULL);
         HWND hAutoStartCheck = CreateWindowW(L"BUTTON", L"开机自动启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 40, 245, 180, 24, m_settingsHwnd, (HMENU)110, m_hInstance, NULL);
@@ -1114,6 +1112,16 @@ LRESULT MainWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LP
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORDLG:
         return HandleCtlColor(wParam);
+    case WM_GETDLGCODE:
+        // 让编辑框捕获所有键盘输入
+        if (GetFocus() == GetDlgItem(hwnd, 105))
+            return DLGC_WANTALLKEYS;
+        break;
+    case WM_CHAR:
+        // 阻止编辑框显示字符
+        if (GetFocus() == GetDlgItem(hwnd, 105))
+            return 0;
+        break;
     case WM_KEYDOWN:
     {
         HWND hFocus = GetFocus();
@@ -1121,6 +1129,10 @@ LRESULT MainWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LP
         if (hFocus == hKeyEdit)
         {
             BYTE vk = (BYTE)wParam;
+            // 忽略修饰键
+            if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN)
+                return 0;
+            
             wchar_t vkStr[8] = { 0 };
             if (vk >= 0x70 && vk <= 0x87)
                 swprintf_s(vkStr, L"F%d", vk - 0x70 + 1);
@@ -1141,6 +1153,7 @@ LRESULT MainWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LP
             }
             SetDlgItemTextW(hwnd, 105, vkStr);
             SetWindowLongPtrW(hKeyEdit, GWLP_USERDATA, (LONG_PTR)vk);
+            return 0;
         }
         return 0;
     }
@@ -1201,6 +1214,7 @@ LRESULT MainWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LP
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 void MainWindow::ApplySettings()
